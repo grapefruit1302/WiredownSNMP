@@ -1,8 +1,9 @@
-from easysnmp import Session
+from easysnmp import Session, EasySNMPTimeoutError
 import datetime
 import struct
 from collections import defaultdict
 import time
+import warnings
 
 
 class EPON:
@@ -61,12 +62,18 @@ class EPON:
                 return variable.oid.split('.')[-1]
 
     def check_wire_down_onts(self):
-        oid_ont = "1.3.6.1.4.1.3320.101.9.1.1.1"
-        oid_all_ports = '1.3.6.1.2.1.2.2.1.2.'
-        oid_ont_mac = '1.3.6.1.4.1.3320.101.10.1.1.3.'
-        oid_ont_status = '1.3.6.1.4.1.3320.101.10.1.1.26.'
+        oid_ont = "1.3.6.1.4.1.3320.101.9.1.1.1" #.1.3.6.1.4.1.3320.101.11.1.1.2.8
+        oid_all_ports = '1.3.6.1.2.1.2.2.1.2.' # .1.3.6.1.2.1.17.1.4.1.2
+        oid_ont_mac = '1.3.6.1.4.1.3320.101.10.1.1.3.' # .1.3.6.1.4.1.3320.152.1.1.3.12.1.112.165.106.1.93.
+        oid_ont_status = '1.3.6.1.4.1.3320.101.10.1.1.26.' #.1.3.6.1.4.1.3320.101.11.1.1.6.8.
         oid_ont_lastderegreason = 'iso.3.6.1.4.1.3320.101.11.1.1.11.'
         oid_ont_lastderegtime = '1.3.6.1.4.1.3320.101.11.1.1.10'
+
+
+        #.1.3.6.1.2.1.17.1.4.1.2 - ifindex
+        #.1.3.6.1.2.1.2.2.1.2 - oid_all_ports
+        #.1.3.6.1.2.1.2.2.1.8 - ont_status
+
 
 
         all_onts = self.session.walk(oid_ont)
@@ -124,35 +131,51 @@ class EPON:
                 while i < len(registration_times) - 1:
                     time_diff = registration_times[i + 1] - registration_times[i]
                     if time_diff <= time_threshold:
-                        same_time_onus = [onu for onu in wire_down_onu_list if datetime.datetime.strptime(onu['ont_lastderegtime'], '%Y-%m-%d %H:%M:%S') == registration_times[i]]
-                        
+                        same_time_onus = [
+                            onu for onu in wire_down_onu_list if datetime.datetime.strptime(onu['ont_lastderegtime'], '%Y-%m-%d %H:%M:%S') == registration_times[i]
+                        ]
+
                         print(f"розреєстровані ону//")
                         print(f"{branch.split('/')[1].strip()} гілка// {len(same_time_onus)} ону//")
                         print(f"час {registration_times[i].strftime('%H:%M:%S')} //\n")
-                        while i < len(registration_times) - 1 and registration_times[i + 1] - registration_times[i] <= time_threshold:
-                            i += 1
+
+                        # Замість while змінив на простий for, щоб краще керувати ітераціями
+                        for j in range(i, len(registration_times) - 1):
+                            if registration_times[j + 1] - registration_times[j] > time_threshold:
+                                break
+                        i = j + 1
                     else:
                         i += 1
 
-
-
-
 file_path = 'ips.txt'
+
+not_work_olt = ["GP3600", "P3310B"] #олти для яких розробляється програмне рішення
 
 
 while True:
     with open(file_path, 'r') as file:
         for line in file:
-            olt_ip = line
-            community_string = "public"
-            session = Session(hostname=olt_ip.strip(), community=community_string, version=2)
-            oid_olt_info = '1.3.6.1.2.1.1.1.0.'
-            olt_info = session.get(oid_olt_info)
+            olt_ip = line.strip()  
+            if not olt_ip:
+                continue
 
-            if "GP" in olt_info.value:
-                print("OLT is GPON")
-            else:
-                print("OLT-" + olt_ip)
-                olt_manager = EPON(olt_ip=olt_ip.strip(), community_string=community_string)
-                olt_manager.check_wire_down_onts()
+            community_string = "public"
+
+            try:
+                session = Session(hostname=olt_ip, community=community_string, version=2)
+                oid_olt_info = '1.3.6.1.2.1.1.1.0.'
+                olt_info = session.get(oid_olt_info)
+
+                for olt in not_work_olt:
+
+                    if olt in olt_info.value: 
+                        print("Program does not work for this switch model!")
+                    else:
+                        print("OLT-" + olt_ip)
+                        olt_manager = EPON(olt_ip=olt_ip, community_string=community_string)
+                        olt_manager.check_wire_down_onts()
+            except EasySNMPTimeoutError:
+                print(f"Connection timeout for OLT {olt_ip}. Skipping this device.")
+                print(" An error occurred! \n Check:\n 1) Internet connection.\n 2) Firewall or security software\n 3) The SNMP service is not available\n")
+
     time.sleep(3)
